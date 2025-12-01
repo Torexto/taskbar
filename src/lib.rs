@@ -8,6 +8,7 @@ use iced::window::Level;
 use iced::*;
 use std::process::Command;
 use widget::{Row, button, container, image, text};
+use crate::running_windows_app::focus_window;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Position {
@@ -93,11 +94,15 @@ impl State {
     pub fn update(&mut self, message: Message) {
         match message {
             Message::ShortcutClicked(shortcut) => {
-                println!("{:?} {:?}", shortcut.target, shortcut.args);
-                Command::new(shortcut.target)
-                    .args(shortcut.args.split_whitespace())
-                    .spawn()
-                    .expect("Failed to execute shortcut target");
+                let target_name = shortcut.target.file_name().unwrap().to_str().unwrap();
+                let focused = focus_window(target_name).is_some();
+                if !focused {
+                    println!("{:?} {:?}", shortcut.target, shortcut.args);
+                    Command::new(shortcut.target)
+                        .args(shortcut.args.split_whitespace())
+                        .spawn()
+                        .expect("Failed to execute shortcut target");
+                }
             }
         }
     }

@@ -12,7 +12,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GWL_EXSTYLE, GetForegroundWindow, GetWindow, GetWindowLongW,
-    GetWindowThreadProcessId, SW_RESTORE, SetForegroundWindow, ShowWindow, WS_EX_TOOLWINDOW,
+    GetWindowThreadProcessId, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    WS_EX_TOOLWINDOW,
 };
 use windows::core::PWSTR;
 
@@ -67,11 +68,7 @@ unsafe fn filter_windows_apps(hwnd: HWND) -> bool {
     if let Some(exe) = exe {
         let exe_name = exe.file_name().unwrap().to_string_lossy().to_lowercase();
 
-        // ❌ twarda czarna lista śmieci
         let blacklist = [
-            // "explorer.exe",
-            // "overwolf.exe",
-            // "rainmeter.exe",
             "nvcontainer.exe",
             "applicationframehost.exe",
             "textinputhost.exe",
@@ -80,23 +77,28 @@ unsafe fn filter_windows_apps(hwnd: HWND) -> bool {
         if blacklist.iter().any(|b| exe_name.contains(b)) {
             return true.into();
         }
-
-        unsafe { focus_window(hwnd) };
-
-        println!("PID: {} | {} | {}", pid, exe_name, title);
     }
 
     true
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    unsafe { return filter_windows_apps(hwnd).into() }
+    unsafe {
+        return filter_windows_apps(hwnd).into();
+    }
 }
 
-pub unsafe fn focus_window(hwnd: HWND) {
+#[derive(Debug)]
+struct FocusData<'a> {
+    name: &'a str,
+    focused: bool,
+}
+
+pub unsafe fn focus_window_from_hwnd(hwnd: HWND) {
     unsafe {
-        // przywraca, jeśli zminimalizowane
-        ShowWindow(hwnd, SW_RESTORE);
+        if IsIconic(hwnd).as_bool() {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
 
         let fg = GetForegroundWindow();
 
@@ -117,17 +119,73 @@ pub unsafe fn focus_window(hwnd: HWND) {
     }
 }
 
-#[derive(Default)]
-struct Application {
-    pid: u32,
-    found: Option<HWND>,
+pub unsafe extern "system" fn focus_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let data = unsafe { &mut *(lparam.0 as *mut FocusData) };
+
+    if data.focused {
+        return false.into();
+    }
+
+    // let is_window_visible = unsafe { filter_windows_apps(hwnd) };
+    // if !is_window_visible {
+    //     return true.into();
+    // }
+
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+
+    let exe = unsafe { exe_from_pid(pid) };
+
+    if exe.is_none() {
+        return true.into();
+    }
+
+    let exe = exe.unwrap();
+
+    let t = exe
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase()
+        .contains(&data.name);
+    
+    if t { dbg!("found"); }
+    
+    if t {
+        unsafe { focus_window_from_hwnd(hwnd) };
+        dbg!("focused");
+        data.focused = true;
+        return false.into();
+    }
+
+    true.into()
 }
 
-fn get_running_windows_apps() {
-    let mut windows_apps: [Application; 20] = Default::default();
+pub fn focus_window(name: &str) -> Option<()> {
+    let mut data = FocusData {
+        name,
+        focused: false,
+    };
+
     unsafe {
-        EnumWindows(Some(enum_proc), LPARAM(&mut windows_apps as *mut _ as isize)).expect("cannot read windows applications");
+        EnumWindows(
+            Some(focus_window_callback),
+            LPARAM(&mut data as *mut _ as isize),
+        )
+        .ok()?;
     }
+
+    if data.focused { Some(()) } else { None }
+}
+fn get_running_windows_apps() {
+    unsafe {
+        EnumWindows(Some(enum_proc), LPARAM(0)).expect("cannot read windows applications");
+    }
+}
+
+#[test]
+fn test_focus_window() {
+    focus_window("explorer.exe");
 }
 
 #[test]
