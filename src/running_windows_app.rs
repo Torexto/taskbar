@@ -38,45 +38,44 @@ unsafe fn exe_from_pid(pid: u32) -> Option<PathBuf> {
 unsafe fn filter_windows_apps(hwnd: HWND) -> bool {
     let is_window_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
     if !is_window_visible {
-        return true;
+        return false;
     }
 
     let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 };
     if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
-        return true;
+        return false;
     }
 
     let window_owner = unsafe { GetWindow(hwnd, GW_OWNER) };
     if window_owner.0 != 0 {
-        return true;
+        return false;
     }
 
     let mut title_buf = [0u16; 256];
     let len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
     if len == 0 {
-        return true;
+        return false;
     }
-
-    let title = OsString::from_wide(&title_buf[..len as usize])
-        .to_string_lossy()
-        .to_string();
 
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
 
     let exe = unsafe { exe_from_pid(pid) };
-    if let Some(exe) = exe {
-        let exe_name = exe.file_name().unwrap().to_string_lossy().to_lowercase();
+    let exe = match exe {
+        Some(exe) => exe,
+        None => return false,
+    };
 
-        let blacklist = [
-            "nvcontainer.exe",
-            "applicationframehost.exe",
-            "textinputhost.exe",
-        ];
+    let exe_name = exe.file_name().unwrap().to_string_lossy().to_lowercase();
 
-        if blacklist.iter().any(|b| exe_name.contains(b)) {
-            return true.into();
-        }
+    const BLACKLIST: [&str; 3] = [
+        "nvcontainer.exe",
+        "applicationframehost.exe",
+        "textinputhost.exe",
+    ];
+
+    if BLACKLIST.iter().any(|b| exe_name.contains(b)) {
+        return false;
     }
 
     true
@@ -122,43 +121,33 @@ pub unsafe fn focus_window_from_hwnd(hwnd: HWND) {
 pub unsafe extern "system" fn focus_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let data = unsafe { &mut *(lparam.0 as *mut FocusData) };
 
-    if data.focused {
-        return false.into();
+    let is_window_visible = unsafe { filter_windows_apps(hwnd) };
+    if !is_window_visible {
+        return true.into();
     }
-
-    // let is_window_visible = unsafe { filter_windows_apps(hwnd) };
-    // if !is_window_visible {
-    //     return true.into();
-    // }
 
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
 
     let exe = unsafe { exe_from_pid(pid) };
 
-    if exe.is_none() {
+    let exe = match exe {
+        Some(exe) => exe,
+        None => return true.into(),
+    };
+
+    let exe_name = exe.file_name().unwrap().to_string_lossy().to_lowercase();
+    let name_match = exe_name.contains(&data.name.to_lowercase());
+
+    if !name_match {
         return true.into();
     }
 
-    let exe = exe.unwrap();
+    dbg!("found");
+    unsafe { focus_window_from_hwnd(hwnd) };
+    data.focused = true;
 
-    let t = exe
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .to_lowercase()
-        .contains(&data.name);
-    
-    if t { dbg!("found"); }
-    
-    if t {
-        unsafe { focus_window_from_hwnd(hwnd) };
-        dbg!("focused");
-        data.focused = true;
-        return false.into();
-    }
-
-    true.into()
+    false.into()
 }
 
 pub fn focus_window(name: &str) -> Option<()> {
@@ -168,14 +157,13 @@ pub fn focus_window(name: &str) -> Option<()> {
     };
 
     unsafe {
-        EnumWindows(
+        let _ = EnumWindows(
             Some(focus_window_callback),
             LPARAM(&mut data as *mut _ as isize),
-        )
-        .ok()?;
+        );
     }
 
-    if data.focused { Some(()) } else { None }
+    data.focused.then_some(())
 }
 fn get_running_windows_apps() {
     unsafe {
